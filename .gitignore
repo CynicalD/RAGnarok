@@ -5,3 +5,6 @@ Explanation.md
 .aws-sam
 __pycache__
 *.pyc
+data/
+samconfig.toml
+.DS_Store
