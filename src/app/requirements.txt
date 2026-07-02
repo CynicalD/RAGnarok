@@ -1,0 +1,5 @@
+# Lambda runtime dependencies (deployed). Keep minimal for cold-start size.
+fastapi==0.138.2
+mangum==0.21.0
+pydantic==2.13.4
+pynacl==1.6.2
