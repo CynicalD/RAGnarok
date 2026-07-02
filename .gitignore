@@ -1,1 +1,7 @@
 .env
+CLAUDE.md
+Explanation.md
+.pytest_cache
+.aws-sam
+__pycache__
+*.pyc

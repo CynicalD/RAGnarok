@@ -1,0 +1,6 @@
+# Local-only dependencies: tests + scripts. Not deployed to Lambda.
+-r src/app/requirements.txt
+pytest==9.1.1
+httpx==0.28.1
+requests==2.34.2
+python-dotenv==1.2.2
