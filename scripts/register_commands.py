@@ -17,14 +17,13 @@ if not APP_ID or not BOT_TOKEN:
 
 command = {
     "name": "ask",
-    "description": "Ask a question about Ark: Survival Ascended",
+    "description": "Ask a question about: Ark Survival Ascended",
     "type": 1,
-    "options": [
-        {
+    "options": [{
             "name": "question",
             "description": "Your question about ASA",
             "type": 3,
-            "required": True,
+            "required": True
         }
     ],
 }

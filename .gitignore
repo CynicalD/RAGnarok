@@ -1,7 +1,18 @@
-.env
-CLAUDE.md
-Explanation.md
-.pytest_cache
-.aws-sam
-__pycache__
+# Python
+__pycache__/
 *.pyc
+.venv/
+.pytest_cache/
+
+# Environment / secrets
+.env
+
+# AWS SAM
+.aws-sam/
+samconfig.toml
+
+# Generated data (rebuilt by scripts/ingest.py)
+data/
+
+# macOS
+.DS_Store

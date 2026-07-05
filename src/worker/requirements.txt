@@ -1,0 +1,5 @@
+# Worker Lambda runtime deps (the heavy RAG stack). Handler Lambda does NOT get these.
+openai==2.44.0
+pinecone==9.1.0
+pinecone-text==0.11.0
+requests==2.34.2
