@@ -2,13 +2,20 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
   RAGnarok — serverless Discord bot for Ark: Survival Ascended (RAG).
-  Milestone 1: the verifying interactions endpoint.
+  Two Lambdas: a fast handler that verifies + defers, and a worker that runs the RAG.
+
+Parameters:
+  # Real secrets — passed at deploy time, never hardcoded/committed.
+  OpenAIApiKey:
+    Type: String
+    NoEcho: true
+  PineconeApiKey:
+    Type: String
+    NoEcho: true
 
 Globals:
   Function:
     Runtime: python3.13
-    Timeout: 10
-    MemorySize: 256
 
 Resources:
   InteractionsFunction:
@@ -16,16 +23,34 @@ Resources:
     Properties:
       CodeUri: src/app/
       Handler: main.handler
+      Timeout: 10
+      MemorySize: 256
       Environment:
         Variables:
           # Safe to hardcode: the Discord PUBLIC key is not a secret.
           DISCORD_PUBLIC_KEY: f428776da235244a009798aa72c1621536d64a2a58d94b3d9058e2ef17f908e3
+          WORKER_FUNCTION_NAME: !Ref WorkerFunction
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref WorkerFunction
       Events:
         Interactions:
           Type: HttpApi
           Properties:
             Path: /interactions
             Method: post
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/worker/
+      Handler: worker.lambda_handler
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          OPENAI_API_KEY: !Ref OpenAIApiKey
+          PINECONE_API_KEY: !Ref PineconeApiKey
 
 Outputs:
   InteractionsUrl:

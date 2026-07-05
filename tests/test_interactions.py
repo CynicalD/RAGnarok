@@ -50,7 +50,8 @@ def test_missing_signature_is_rejected(client):
     assert resp.status_code == 401
 
 
-def test_application_command_defers(client, signing_key):
+def test_application_command_defers(client, signing_key, monkeypatch):
+    monkeypatch.setattr(main, "invoke_worker", lambda interaction: None)
     body = json.dumps({"type": 2, "id": "1", "token": "abc", "data": {"name": "ask"}}).encode()
     resp = client.post("/interactions", content=body, headers=_signed_headers(signing_key, body))
     assert resp.status_code == 200

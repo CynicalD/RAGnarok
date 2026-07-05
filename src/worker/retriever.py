@@ -14,14 +14,18 @@ try:
 except ModuleNotFoundError:
     pass
 
+import nltk
+
 from openai import OpenAI
 from pinecone import Pinecone
 from pinecone_text.sparse import BM25Encoder
 
+# BM25's tokenizer needs nltk data; we bundle it beside this file for Lambda.
+nltk.data.path.insert(0, str(Path(__file__).parent / "nltk_data"))
 
 INDEX_NAME = "ragnarok"
 EMBED_MODEL = "text-embedding-3-small"
-BM25_PATH = Path(__file__).resolve().parents[2] / "data" / "bm25_encoder.json"
+BM25_PATH = Path(__file__).parent / "bm25_encoder.json"
 DEFAULT_TOP_K = 5
 DEFAULT_ALPHA = 0.5
 
