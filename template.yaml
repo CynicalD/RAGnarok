@@ -24,7 +24,9 @@ Resources:
       CodeUri: src/app/
       Handler: main.handler
       Timeout: 10
-      MemorySize: 256
+      # More memory = more CPU during cold start, so imports finish well within
+      # Discord's 3s window for the deferred ack. Handler runs ~1s, billed per-ms.
+      MemorySize: 1024
       Environment:
         Variables:
           # Safe to hardcode: the Discord PUBLIC key is not a secret.
