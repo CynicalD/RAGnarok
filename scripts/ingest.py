@@ -37,13 +37,14 @@ PINECONE_REGION = "us-east-1"
 BM25_PATH = Path("data/bm25_encoder.json")
 BATCH_SIZE = 100
 
-# sMall iconic test slice. Swap for a full category once quality is verified.
-CREATURES = [
-    "Rex", "Raptor", "Ankylosaurus", "Argentavis", "Triceratops", "Parasaur",
-    "Dodo", "Pteranodon", "Spino", "Giganotosaurus", "Carnotaurus", "Dilophosaur",
-    "Sarco", "Megalodon", "Quetzal", "Therizinosaurus", "Stegosaurus", "Brontosaurus",
-    "Doedicurus", "Castoroides", "Direwolf", "Sabertooth", "Woolly Rhino", "Mammoth",
-    "Beelzebufo", "Baryonyx", "Allosaurus", "Megatherium", "Iguanodon", "Pachy",
+CREATURE_CATEGORY = "Creatures"
+
+# General "how does X work" pages. Creature pages cover per-creature specifics,
+# these cover the mechanics those pages assume you already know.
+MECHANICS_PAGES = [
+    "Taming", "Breeding", "Incubation", "Imprinting", "Mutations", "Kibble",
+    "Saddles", "Cryopod", "Eggs", "Torpidity", "Leveling", "Experience",
+    "Creature stats calculation", "Cloning Chamber", "Tek Tier", "Bosses", "Weight",
 ]
 
 # HTML elements that are navigation/styling/tables, not article prose.
@@ -58,6 +59,49 @@ def page_url(title):
     return f"https://ark.wiki.gg/wiki/{title.replace(' ', '_')}"
 
 
+def slug(title):
+    """Pinecone vector IDs must be printable ASCII, but titles aren't (Fenrisúlfr)."""
+    return re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-").lower()
+
+
+def api_query(**params):
+    """Yield each page of a MediaWiki API response, following the continuation cursor."""
+    params.update(format="json", formatversion="2")
+    while True:
+        resp = requests.get(API_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        yield data
+        if "continue" not in data:
+            return
+        params.update(data["continue"])
+
+
+def fetch_creature_titles():
+    """Every real creature page on the wiki.
+
+    Category:Creatures holds ~760 pages, but over half are redirects: variants like
+    "Aberrant Rex" or "Corrupted Rex" point at the base creature page rather than
+    holding their own content. Dropping redirects collapses them automatically and
+    leaves ~350 pages with actual prose. Subpages (e.g. "Ankylosaurus/tr") are
+    translations, so they go too.
+    """
+    titles = []
+    for page in api_query(
+        action="query",
+        generator="categorymembers",
+        gcmtitle=f"Category:{CREATURE_CATEGORY}",
+        gcmnamespace=0,
+        gcmlimit=500,
+        prop="info",
+    ):
+        for entry in page["query"]["pages"]:
+            if "redirect" in entry or "/" in entry["title"]:
+                continue
+            titles.append(entry["title"])
+    return sorted(titles)
+
+
 def fetch_page_html(title):
     params = {"action": "parse", "page": title, "prop": "text", "format": "json", "formatversion": "2"}
     resp = requests.get(API_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=20)
@@ -68,14 +112,34 @@ def fetch_page_html(title):
     return data["parse"]["text"]
 
 
-def html_to_text(html):
+def infobox_facts(content, title):
+    """Pull the creature infobox out as plain "Label: Value" lines.
+
+    The infobox holds the facts players actually ask for — saddle and its level, taming
+    method, preferred kibble, drag weight, incubation and maturation times. It renders as
+    nested widget divs, so we read only the leaf rows (`info-unit-row`) and dedupe: the
+    parent wrappers repeat their children's text, which would otherwise triple the content.
+    """
+    facts = []
+    for row in content.select("div.info-unit-row"):
+        text = re.sub(r"\s+", " ", row.get_text(" ", strip=True))
+        if text and text != title and text not in facts:
+            facts.append(text)
+    return facts
+
+
+def html_to_text(html, title):
     soup = BeautifulSoup(html, "html.parser")
     content = soup.select_one("div.mw-parser-output") or soup
+
+    # Read the infobox before the noise pass below strips the widgets it lives in.
+    facts = infobox_facts(content, title)
+
     for selector in NOISE_SELECTORS:
         for tag in content.select(selector):
             tag.decompose()
 
-    parts = []
+    parts = [f"{title} key facts: " + "; ".join(facts)] if facts else []
     for element in content.find_all(["h2", "h3", "p", "li"]):
         text = element.get_text(" ", strip=True)
         if text:
@@ -90,7 +154,7 @@ def chunk_text(text, title, encoder):
     for index, start in enumerate(range(0, len(tokens), step)):
         window = tokens[start:start + CHUNK_TOKENS]
         chunks.append({
-            "id": f"{title}-{index}",
+            "id": f"{slug(title)}-{index}",
             "title": title,
             "url": page_url(title),
             "text": encoder.decode(window).strip(),
@@ -102,7 +166,7 @@ def chunk_text(text, title, encoder):
 
 def scrape_pages(titles):
     rows = []
-    for title in titles:
+    for position, title in enumerate(titles, start=1):
         try:
             html = fetch_page_html(title)
         except requests.RequestException as error:
@@ -111,10 +175,10 @@ def scrape_pages(titles):
         if not html:
             print(f"  ! {title}: page not found, skipping")
             continue
-        text = html_to_text(html)
+        text = html_to_text(html, title)
         rows.append({"title": title, "url": page_url(title), "text": text, "words": len(text.split())})
-        print(f"  - {title}: {len(text.split())} words")
-        time.sleep(0.5)  # be polite to the wiki
+        print(f"  [{position}/{len(titles)}] {title}: {len(text.split())} words")
+        time.sleep(0.3)  # be polite to the wiki
     return rows
 
 
@@ -160,8 +224,10 @@ def upsert_chunks(index, chunks, dense_vectors, sparse_vectors):
 
 
 def main():
-    print(f"Scraping {len(CREATURES)} pages from the ARK wiki...")
-    rows = scrape_pages(CREATURES)
+    creatures = fetch_creature_titles()
+    titles = creatures + MECHANICS_PAGES
+    print(f"Found {len(creatures)} creature pages + {len(MECHANICS_PAGES)} mechanics pages.\n")
+    rows = scrape_pages(titles)
 
     df = pd.DataFrame(rows)
     df = df.drop_duplicates(subset="text")
@@ -194,6 +260,13 @@ def main():
     print("Creating index (if needed) and upserting into Pinecone...")
     pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
     index = ensure_index(pc)
+
+    # BM25 was just re-fit, so every sparse vector already in the index maps terms to
+    # different IDs than the new encoder does. Mixing the two would score nonsense.
+    if index.describe_index_stats().get("total_vector_count", 0):
+        print("  wiping stale vectors (BM25 term IDs changed)...")
+        index.delete(delete_all=True)
+
     upsert_chunks(index, all_chunks, dense_vectors, sparse_vectors)
     print(index.describe_index_stats())
 
