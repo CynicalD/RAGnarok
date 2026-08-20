@@ -1,4 +1,4 @@
-"""Generate a grounded answer from retrieved wiki chunks using gpt-4o-mini."""
+"""Generate a grounded answer from retrieved wiki chunks using gpt-5.4-mini."""
 
 import sys
 
@@ -6,7 +6,11 @@ from openai import OpenAI
 
 from retriever import retrieve
 
-CHAT_MODEL = "gpt-4o-mini"
+CHAT_MODEL = "gpt-5.4-mini"
+# gpt-5 models are reasoning-capable. The answer is already in the context, so we
+# turn reasoning off: no reasoning tokens billed, and Discord users aren't left waiting.
+REASONING_EFFORT = "none"
+MAX_ANSWER_TOKENS = 600
 NO_CONTEXT_MESSAGE = (
     "I couldn't find anything in the ARK wiki to answer that. Try rephrasing, "
     "or ask about a specific creature."
@@ -32,6 +36,8 @@ def generate_answer(query, chunks):
     response = openai_client.chat.completions.create(
         model=CHAT_MODEL,
         temperature=0.2,
+        reasoning_effort=REASONING_EFFORT,
+        max_completion_tokens=MAX_ANSWER_TOKENS,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": build_prompt(query, chunks)},

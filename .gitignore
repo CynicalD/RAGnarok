@@ -16,3 +16,7 @@ data/
 
 # macOS
 .DS_Store
+
+# Local cost analysis (not for the repo)
+cost_audit.md
+biz.md
