@@ -26,8 +26,12 @@ nltk.data.path.insert(0, str(Path(__file__).parent / "nltk_data"))
 INDEX_NAME = "ragnarok"
 EMBED_MODEL = "text-embedding-3-small"
 BM25_PATH = Path(__file__).parent / "bm25_encoder.json"
-DEFAULT_TOP_K = 5
-DEFAULT_ALPHA = 0.5
+DEFAULT_TOP_K = 8
+# Measured, not guessed — see scripts/eval_retrieval.py. Accuracy is flat at 100% for
+# alpha 0.6-0.95 and drops to 85% at 0.4, because misspelled dino names score ~zero on
+# BM25 and need the dense vector to carry them. 0.7 sits mid-plateau, so it keeps real
+# sparse weight for rare game terms without depending on exact spelling.
+DEFAULT_ALPHA = 0.7
 
 openai_client = OpenAI()
 pinecone_index = Pinecone(api_key=os.environ["PINECONE_API_KEY"]).Index(INDEX_NAME)
