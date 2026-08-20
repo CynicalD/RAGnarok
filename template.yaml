@@ -16,6 +16,10 @@ Parameters:
 Globals:
   Function:
     Runtime: python3.13
+    # arm64 (AWS Graviton) — ~20% cheaper per GB-second, and it matches an Apple Silicon
+    # Mac, so `sam build --use-container` runs natively instead of under emulation.
+    Architectures:
+      - arm64
 
 Resources:
   InteractionsFunction:
