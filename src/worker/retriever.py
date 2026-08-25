@@ -74,6 +74,10 @@ SAMPLE_QUESTIONS = [
     "What is a good early game mount?",
     "Tell me about the Quetzal platform saddle.",
     "Which creatures live in the water?",
+    "How can I get the GigaDesmodus?",
+    "How can I tame a dreadnoughtus",
+    "What is the strongest dinosaur for the broodmother island boss?",
+    "How can I breed a Rex?"
 ]
 
 
