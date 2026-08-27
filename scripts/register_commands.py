@@ -10,7 +10,7 @@ load_dotenv()
 
 APP_ID = os.environ.get("DISCORD_APP_ID")
 BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
-GUILD_ID = os.environ.get("DISCORD_GUILD_IiD")
+GUILD_ID = os.environ.get("DISCORD_GUILD_ID")
 
 if not APP_ID or not BOT_TOKEN:
     sys.exit("Set DISCORD_APP_ID and DISCORD_BOT_TOKEN in your environment/.env first.")
