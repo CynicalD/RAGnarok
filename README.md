@@ -6,7 +6,7 @@ A Discord bot that answers Ark: Survival Ascended questions. You type `/ask`, it
 
 ## Why
 
-I built this for myself. I wanted to know how to tame certain dinos and what to feed them. Asking ChatGPT on the free plan meant hitting the limit and waiting a few hours. Googling meant digging 5 links deep. So I made a bot that only reads the wiki. It costs about a third of a cent per question, which is next to nothing per month.
+I built this for myself. I wanted to know how to tame certain dinos and what to feed them. Asking ChatGPT on the free plan wasn't ideal, kept hitting the limit and waiting a few hours. Googling meant digging links. So I made a bot that only reads the wiki. It costs about a third of a cent per question, which is next to nothing per month.
 
 ## Demo
 
@@ -29,7 +29,7 @@ It's a RAG pipeline running on two AWS Lambdas.
 
 `scripts/ingest.py` runs locally and never gets deployed. It pulls every creature page on the wiki plus 17 mechanics pages like Taming, Breeding and Imprinting. It cleans them to plain text, pulls out the infobox facts like saddle level, kibble and incubation time, then chunks, embeds and uploads everything to Pinecone.
 
-370 pages, 2,371 chunks, about $0.02 per full run.
+370 pages, 2,371 chunks (as of now), about $0.02 per full run.
 
 ## Tuning
 
@@ -97,13 +97,14 @@ If your OpenAI project limits which models it can use, allow both text-embedding
 
 - No memory. Every `/ask` is standalone, so follow-up questions don't work yet.
 - Answers are only as fresh as the last ingest. After a game patch, re-run it.
-- No rate limiting yet, so one person could spam it.
+- No rate limiting yet, so one person could spam it (don't). 
 
 ## Roadmap
 
 - Wiki source links in every answer
 - Per-user rate limits
 - Follow-up questions
+- Cache FAQ's
 
 ## License
 
