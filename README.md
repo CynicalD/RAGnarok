@@ -1,129 +1,110 @@
 # RAGnarok
 
-A serverless Discord bot that answers questions about Ark: Survival Ascended. You ask it something with the `/ask` command, and it searches a knowledge base built from the ARK wiki, pulls out the most relevant passages, and uses an LLM to write an answer grounded in what it found (so it isn't just making things up).
+A Discord bot that answers Ark: Survival Ascended questions. You type `/ask`, it searches the ARK wiki and writes an answer from what it found.
 
-Under the hood it's a Retrieval-Augmented Generation (RAG) pipeline running entirely on AWS Lambda, using hybrid search: semantic embeddings for meaning plus keyword matching for exact terms.
+**[Join the Discord and try it](https://discord.gg/SZ9HXsxMn)**
 
-## Demmo
+## Why
 
-![Asking bot question::](docs/AskingQ.png)
-![How to tame a rex:](docs/HowToTameAllosaurusQ.png)
-![How to tame a brontos](docs/HowToTameBrontoQ.png)
-![How to tame an allosauruss](docs/HowToTameAllosaurusQ.png)
+I built this for myself. I wanted to know how to tame certain dinos and what to feed them. Asking ChatGPT on the free plan meant hitting the limit and waiting a few hours. Googling meant digging 5 links deep. So I made a bot that only reads the wiki. It costs about a third of a cent per question, which is next to nothing per month.
 
-Example:
+## Demo
 
-```
-/ask What saddle do I need to ride a Rex?
-→ RAGnarok is thinking...
-→ The Rex requires a Rex Saddle to ride, which is unlocked as an engram...
-```
+![Asking the bot a question](docs/AskingQ.png)
+![How to tame a Rex](docs/HowToTameRexQ.png)
+![How to tame a Bronto](docs/HowToTameBrontoQ.png)
+![How to tame an Allosaurus](docs/HowToTameAllosaurusQ.png)
 
-## What it deos
+## How it works
 
-This project puts a full RAG system into a real, deployed product:
+It's a RAG pipeline running on two AWS Lambdas.
 
-- builds a knowledge base from the ARK wiki (scrape, clean, chunk, embed)
-- hybrid retrieval (semantic + keyword) over a vector database
-- grounded answer generation with an LLM
-- a real Discord integration with request signature verification
-- everything deployed as infrastructure-as-code on AWS
+1. You run `/ask` in Discord.
+2. Discord sends a signed request to the handler Lambda. The handler checks the signature, replies "thinking..." right away, and passes the question to the worker Lambda. Discord wants a reply within 3 seconds and a real answer takes about 3, so the slow part has to run somewhere else.
+3. The worker embeds the question and runs a hybrid search in Pinecone. Dense vectors match meaning. BM25 matches exact Ark terms like "engram".
+4. The top 8 chunks go to gpt-5.4-mini with instructions to answer only from that context.
+5. The worker edits the "thinking..." message with the answer.
 
-## Tech Stack
+## Knowledge base
 
-- Language: Python 3.13
-- Web framework: FastAPI + Mangum (runs FastAPI on Lambda)
-- Infrastructure: AWS SAM (Lambda, API Gateway, IAM)
-- Embeddings: OpenAI text-embedding-3-small
-- Answer generation: OpenAI gpt-4o-mini
-- Vector database: Pinecone (hybrid dense + sparse search)
-- Keyword search: BM25 (pinecone-text)
-- Ingestion: requests + BeautifulSoup + pandas
-- Signature verification: PyNaCl (Ed25519)
+`scripts/ingest.py` runs locally and never gets deployed. It pulls every creature page on the wiki plus 17 mechanics pages like Taming, Breeding and Imprinting. It cleans them to plain text, pulls out the infobox facts like saddle level, kibble and incubation time, then chunks, embeds and uploads everything to Pinecone.
 
-## Architecture Overview
+370 pages, 2,371 chunks, about $0.02 per full run.
 
-RAGnarok runs as two Lambda functions. The reason for two is that Discord expects a reply within 3 seconds, but actually generating an answer takes longer than that.
+## Tuning
 
-1. User runs `/ask` in Discord.
-2. Discord sends a signed request to the handler Lambda.
-3. The handler verifies the signature, then replies with a "thinking..." message right away, so Discord is satisfied inside the 3 second window.
-4. Just before replying, the handler asynchronously invokes the worker Lambda with the question.
-5. The worker embeds the question and runs a hybrid search against Pinecone to get the most relevant chunks.
-6. Those chunks are passed to gpt-4o-mini, which writes an answer using only that context.
-7. The worker edits the original "thinking..." message with the final answer.
+Hybrid search has a knob that sets how much weight goes to meaning vs keywords. I guessed keyword-heavy would win, since Ark has a lot of weird names. Then I measured it.
 
-## Data Pipeline
+`scripts/eval_retrieval.py` runs 20 test questions, 5 with misspelled dino names, and checks if the right page comes back. Pure keyword search got 70%. A 0.7 blend toward meaning got 100%. Keywords lost for two reasons. BM25 can't match "gigantoraptr" at all. And once the corpus grew 7x, words like "egg" showed up in thousands of chunks and stopped meaning anything.
 
-The knowledge base is built ahead of time by `scripts/ingest.py`, which runs locally and never gets deployed. It scrapes ARK wiki pages through the MediaWiki API, cleans the HTML down to plain text, splits each page into roughly 500 token chunks, embeds them, fits a BM25 model, and uploads everything to Pinecone.
+## Cost
 
-## Project Structure
+Measured over real queries, about $0.0033 per question. OpenAI is 99% of that. Lambda and Pinecone stay inside their free tiers.
+
+## Tech stack
+
+- Python 3.13, FastAPI + Mangum
+- AWS SAM: Lambda on arm64, API Gateway, IAM
+- OpenAI text-embedding-3-small for embeddings, gpt-5.4-mini for answers
+- Pinecone for hybrid dense + sparse search
+- BM25 via pinecone-text
+- requests, BeautifulSoup and pandas for ingestion
+- PyNaCl for Discord's Ed25519 signature check
+
+## Project structure
 
 ```text
 .
-├── src/app          handler Lambda (verifies, defers, invokes worker)
-├── src/worker       worker Lambda (retrieval + generation + Discord reply)
+├── src/app          handler Lambda: verifies, defers, invokes worker
+├── src/worker       worker Lambda: retrieval, generation, Discord reply
 ├── scripts
 │   ├── ingest.py             builds the knowledge base
-│   └── register_commands.py  registers the /ask command with Discord
-├── tests            handler tests (run offline)
+│   ├── eval_retrieval.py     scores retrieval across blend values
+│   └── register_commands.py  registers /ask with Discord
+├── tests            handler tests, run offline
 └── template.yaml    AWS SAM infrastructure
 ```
 
-## Local Development Setup
+## Run it yourself
 
-### Prerequisites
-
-- Python 3.13
-- AWS SAM CLI and Docker
-- Accounts for OpenAI, Pinecone, and a Discord application
-- AWS credentials configured in your environment
-
-### 1) Install dependencies
+You need Python 3.13, the AWS SAM CLI, Docker, AWS credentials, and accounts for OpenAI, Pinecone and a Discord application.
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
+cp .env.example .env   # fill in your keys
 ```
 
-Copy `.env.example` to `.env` and fill in your keys.
-
-### 2) Build the knowledge base
+Build the knowledge base, then copy the fitted BM25 encoder into the worker. The worker loads its own copy, and a stale one silently breaks keyword search.
 
 ```bash
 python scripts/ingest.py
+cp data/bm25_encoder.json src/worker/
 ```
 
-### 3) Deploy
+Deploy, register the command, then paste the endpoint URL into the Discord developer portal.
 
 ```bash
 sam build --use-container
 sam deploy --guided
-```
-
-Pass your OpenAI and Pinecone keys as parameters during deploy. Then register the slash command and paste the deploy's endpoint URL into the Discord developer portal:
-
-```bash
 python scripts/register_commands.py
 ```
 
-## Cost
+If your OpenAI project limits which models it can use, allow both text-embedding-3-small and gpt-5.4-mini. I only allowed the chat model once and every question failed with a 403.
 
-Running this is basically free at personal scale. Each question costs a fraction of a cent, mostly from the gpt-4o-mini call, and both Pinecone and Lambda stay inside their free tiers. Building the knowledge base is a one-time cost of a few cents in embeddings.
+## Limitations
 
-## Notes and Limitations
-
-- The knowledge base currently covers a slice of creature pages. `ingest.py` scales to the full wiki by widening its page list.
-- Facts stored in wiki infobox tables (like exact saddle unlock levels) don't retrieve as well, since tables get stripped during cleaning. The main article text works well.
-- Auth is handled entirely by Discord's request signatures, so the endpoint is intentionally public.
+- No memory. Every `/ask` is standalone, so follow-up questions don't work yet.
+- Answers are only as fresh as the last ingest. After a game patch, re-run it.
+- No rate limiting yet, so one person could spam it.
 
 ## Roadmap
 
-1. Expand the knowledge base to the full wiki.
-2. Extract infobox tables so exact stats are searchable.
-3. Add conversation memory so follow-up questions work.
+- Wiki source links in every answer
+- Per-user rate limits
+- Follow-up questions
 
 ## License
 
-This project is licensed under the terms in [LICENSE](LICENSE).
+See [LICENSE](LICENSE).
