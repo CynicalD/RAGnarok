@@ -57,20 +57,13 @@ def parse_option(text):
         return name, value
 
 
-def main():
-    arguments = [argument for argument in sys.argv[1:] if argument != "-v"]
-    verbose = "-v" in sys.argv
-    if arguments:
-        generator.CHAT_MODEL = arguments[0]
-        generator.CHAT_OPTIONS = dict(parse_option(option) for option in arguments[1:])
-        generator.MAX_ANSWER_TOKENS = 2000  # room for reasoning tokens, which count as output
-    input_price, output_price = PRICES[generator.CHAT_MODEL]
-
+def run(cases, guild_id=None, verbose=False):
+    """Ask every case, print the failures, and return the totals for the summary."""
     correct = tokens_in = tokens_out = 0
     seconds = []
-    for question, must_contain in CASES:
+    for question, must_contain in cases:
         started = time.time()
-        result = generator.answer(question)
+        result = generator.answer(question, guild_id)
         seconds.append(time.time() - started)
         tokens_in += result["input_tokens"]
         tokens_out += result["output_tokens"]
@@ -83,12 +76,28 @@ def main():
         correct += passed
         if verbose or not passed:
             print(f"{'PASS' if passed else 'FAIL'}  {question}\n      {result['text'][:300]!r}\n")
+    return correct, tokens_in, tokens_out, seconds
 
-    count = len(CASES)
+
+def summarize(count, correct, tokens_in, tokens_out, seconds):
+    input_price, output_price = PRICES[generator.CHAT_MODEL]
     cost = (tokens_in * input_price + tokens_out * output_price) / 1e6 / count
-    print(f"model {generator.CHAT_MODEL} {generator.CHAT_OPTIONS}")
     print(f"correct {correct}/{count}  |  ${cost:.5f} per question  |  {tokens_in // count} in / {tokens_out // count} out")
     print(f"seconds per question: average {sum(seconds) / count:.1f}, slowest {max(seconds):.1f}")
+
+
+def main():
+    arguments = [argument for argument in sys.argv[1:] if argument != "-v"]
+    if arguments:
+        generator.CHAT_MODEL = arguments[0]
+        generator.CHAT_OPTIONS = dict(parse_option(option) for option in arguments[1:])
+        generator.MAX_ANSWER_TOKENS = 2000  # room for reasoning tokens, which count as output
+    if generator.CHAT_MODEL not in PRICES:
+        sys.exit(f"Add {generator.CHAT_MODEL} to PRICES first.")
+
+    totals = run(CASES, verbose="-v" in sys.argv)
+    print(f"model {generator.CHAT_MODEL} {generator.CHAT_OPTIONS}")
+    summarize(len(CASES), *totals)
 
 
 if __name__ == "__main__":

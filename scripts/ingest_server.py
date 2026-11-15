@@ -21,8 +21,9 @@ NOTE_SUFFIXES = {".md", ".txt"}
 
 
 def note_title(path):
-    """rank-perks.md -> "Rank perks". Answers show this title as their source."""
-    return path.stem.replace("-", " ").replace("_", " ").capitalize()
+    """rank-perks.md -> "Rank perks", FAQ.txt -> "FAQ". Answers show this title as their source."""
+    title = path.stem.replace("-", " ").replace("_", " ")
+    return title[:1].upper() + title[1:]
 
 
 def read_notes(folder):
