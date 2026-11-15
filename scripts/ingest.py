@@ -37,7 +37,8 @@ EMBED_MODEL = "text-embedding-3-small"
 EMBED_DIM = 1536
 PINECONE_CLOUD = "aws"
 PINECONE_REGION = "us-east-1"
-BM25_PATH = Path("data/bm25_encoder.json")
+# Written straight into the worker package: the worker must load the same fit the index was built with.
+BM25_PATH = Path("src/worker/bm25_encoder.json")
 BATCH_SIZE = 100
 
 # Wiki categories to ingest. Order is priority: a page in two categories keeps the first.
