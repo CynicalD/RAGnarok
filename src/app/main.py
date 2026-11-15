@@ -12,18 +12,26 @@ import config
 from fastapi import FastAPI, HTTPException, Request, status
 from mangum import Mangum
 from models import Interaction, InteractionResponseType, InteractionType
+from pydantic import ValidationError
 from verification import verify_signature
 
 app = FastAPI(title="RAGnarok")
+lambda_client = None
 
 
 def invoke_worker(interaction):
-    import boto3
+    # Built on first use and kept for warm invocations. Importing boto3 at the top
+    # would slow down every cold start, including Discord's PING check.
+    global lambda_client
+    if lambda_client is None:
+        import boto3
 
-    boto3.client("lambda").invoke(
+        lambda_client = boto3.client("lambda")
+
+    lambda_client.invoke(
         FunctionName=os.environ["WORKER_FUNCTION_NAME"],
         InvocationType="Event",  # async: returns immediately, worker runs on its own
-        Payload=json.dumps(interaction).encode(),
+        Payload=json.dumps(interaction).encode(),  # the data sent to the worker
     )
 
 
@@ -40,7 +48,10 @@ async def interactions(request: Request):
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid request signature")
 
-    interaction = Interaction.model_validate_json(body)
+    try:
+        interaction = Interaction.model_validate_json(body)
+    except ValidationError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="malformed interaction")
 
     if interaction.type == InteractionType.PING:
         return {"type": InteractionResponseType.PONG}

@@ -1,4 +1,4 @@
-"""Milestone 1 tests: PING/PONG and signature verification, run fully offline."""
+"""Handler tests: PING/PONG, signature verification and deferral, run fully offline."""
 
 import json
 
@@ -56,3 +56,9 @@ def test_application_command_defers(client, signing_key, monkeypatch):
     resp = client.post("/interactions", content=body, headers=_signed_headers(signing_key, body))
     assert resp.status_code == 200
     assert resp.json() == {"type": 5}
+
+
+def test_malformed_payload_is_rejected(client, signing_key):
+    body = json.dumps({"type": 99}).encode()
+    resp = client.post("/interactions", content=body, headers=_signed_headers(signing_key, body))
+    assert resp.status_code == 400
