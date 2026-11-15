@@ -1,7 +1,8 @@
 """Hybrid retrieval: turn a question into the top-k most relevant wiki chunks.
 
 Embeds the query (dense) + BM25-encodes it (sparse), blends them with `alpha`,
-then searches the Pinecone index.
+then searches the Pinecone index. A Discord server with its own notes also gets
+the best few of those, from its private namespace.
 """
 
 import os
@@ -31,33 +32,53 @@ DEFAULT_TOP_K = 8
 # On the 3,876-chunk corpus only 0.8-0.9 gets every question right, so 0.85 sits in the
 # middle. Lower values lose misspelled names, which score zero on the BM25 side.
 DEFAULT_ALPHA = 0.85
+# A server's notes always get this many places in the context, on top of the wiki's
+# top_k. Ranking both by score doesn't work: the wiki has thousands of chunks, so eight
+# of them nearly always outscore the one note that holds the server's own answer.
+SERVER_TOP_K = 3
 
 openai_client = OpenAI()
 pinecone_index = Pinecone(api_key=os.environ["PINECONE_API_KEY"]).Index(INDEX_NAME)
 bm25 = BM25Encoder().load(str(BM25_PATH))
 
 
-def retrieve(query, top_k=DEFAULT_TOP_K, alpha=DEFAULT_ALPHA):
-    dense = openai_client.embeddings.create(model=EMBED_MODEL, input=[query]).data[0].embedding
+def guild_namespace(guild_id):
+    return f"guild-{guild_id}"  # must match scripts/ingest_server.py
+
+
+def to_hits(matches, source):
+    return [
+        {
+            "score": match["score"],
+            "title": match["metadata"]["title"],
+            "url": match["metadata"].get("url", ""),
+            "text": match["metadata"]["text"],
+            "source": source,
+        }
+        for match in matches
+    ]
+
+
+def retrieve(query, guild_id=None, top_k=DEFAULT_TOP_K, alpha=DEFAULT_ALPHA):
+    embedding = openai_client.embeddings.create(model=EMBED_MODEL, input=[query]).data[0].embedding
     sparse = bm25.encode_queries(query)
 
-    dense = [value * alpha for value in dense]
+    dense = [value * alpha for value in embedding]
     sparse = {"indices": sparse["indices"], "values": [value * (1 - alpha) for value in sparse["values"]]}
 
     query_args = {"vector": dense, "top_k": top_k, "include_metadata": True}
     if sparse["indices"] and alpha < 1.0:
         query_args["sparse_vector"] = sparse
+    hits = to_hits(pinecone_index.query(**query_args)["matches"], "wiki")
 
-    matches = pinecone_index.query(**query_args)["matches"]
-    return [
-        {
-            "score": match["score"],
-            "title": match["metadata"]["title"],
-            "url": match["metadata"]["url"],
-            "text": match["metadata"]["text"],
-        }
-        for match in matches
-    ]
+    if guild_id:
+        # Dense only: the BM25 encoder is fitted on wiki text. A server with no notes
+        # has no namespace, and Pinecone returns no matches for it.
+        server_matches = pinecone_index.query(
+            vector=embedding, top_k=SERVER_TOP_K, include_metadata=True, namespace=guild_namespace(guild_id)
+        )["matches"]
+        hits = to_hits(server_matches, "server") + hits
+    return hits
 
 
 SAMPLE_QUESTIONS = [
