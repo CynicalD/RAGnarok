@@ -6,7 +6,7 @@ A Discord bot that answers Ark: Survival Ascended questions. You type `/ask`, it
 
 ![RAGnarok answering questions in Discord](docs/demo.png)
 
-| | |
+| At a glance | |
 |---|---|
 | Knowledge base | 791 wiki pages: every creature, weapon, armor piece and saddle, plus core mechanics |
 | Answer time | 1 to 2 seconds once warm |
@@ -24,28 +24,23 @@ It's a RAG pipeline on two AWS Lambdas.
 
 ```mermaid
 flowchart LR
-    subgraph offline["Offline, on my laptop"]
-        W[ARK wiki API] --> I[scripts/ingest.py<br/>scrape, clean, chunk]
-        I --> V[dense + sparse vectors]
-    end
-    V --> P[(Pinecone)]
-
-    subgraph online["Every /ask, on AWS"]
-        D[Discord] -->|signed POST| H[Handler Lambda<br/>verify, defer]
-        H -->|async invoke| K[Worker Lambda]
-        K -->|PATCH answer| D
-    end
-    K <-->|hybrid search| P
-    K <-->|embed + answer| O[OpenAI]
-    K <-->|daily count| Q[(DynamoDB)]
+    D[Discord] -->|1. signed POST| H[Handler Lambda<br/>verify, defer]
+    H -->|2. async invoke| K[Worker Lambda]
+    K -->|6. edit the reply| D
+    K <-->|3. daily count| Q[(DynamoDB)]
+    K <-->|4. hybrid search| P[(Pinecone)]
+    K <-->|5. embed, answer| O[OpenAI]
+    P ---|filled offline by scripts/ingest.py| W[ARK wiki API]
 ```
 
-1. You run `/ask` in Discord.
-2. Discord sends a signed request to the handler Lambda. The handler checks the Ed25519 signature, starts the worker, and replies "thinking..." right away. Discord wants a reply within 3 seconds and a cold worker takes about 7, so the slow part has to run somewhere else.
+1. Discord sends a signed request to the handler Lambda. The handler checks the Ed25519 signature and replies "thinking..." right away. Discord wants a reply within 3 seconds and a cold worker takes about 7, so the slow part has to run somewhere else.
+2. Before replying, the handler starts the worker Lambda with an async invoke.
 3. The worker checks your daily limit in DynamoDB.
 4. It embeds the question and runs a hybrid search in Pinecone. Dense vectors match meaning. BM25 matches exact Ark terms like "engram".
 5. The top 8 chunks go to gpt-5.4-mini as numbered passages. It has to answer from those passages only, name the ones it used, and return a fixed marker when none of them answer the question.
 6. The worker edits the "thinking..." message into the answer and adds links to the source pages.
+
+The knowledge base is built separately. `scripts/ingest.py` runs on my laptop, never on Lambda, and fills Pinecone from the wiki's API.
 
 ## Things I measured instead of guessing
 
