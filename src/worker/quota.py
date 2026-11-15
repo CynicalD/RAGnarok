@@ -16,10 +16,10 @@ DEFAULT_DAILY_LIMIT = 10
 # gets the highest limit. Anyone without a listed role gets DEFAULT_DAILY_LIMIT.
 GUILD_ROLE_LIMITS = {
     # "123456789012345678": {
-    #     "111111111111111111": 20,   # Apprentice
-    #     "222222222222222222": 40,   # Journeyman
-    #     "333333333333333333": 75,   # Mastercraft
-    #     "444444444444444444": 150,  # Ascendant
+    #     "111111111111111111": 15,   # Apprentice
+    #     "222222222222222222": 30,   # Journeyman
+    #     "333333333333333333": 50,   # Mastercraft
+    #     "444444444444444444": 100,  # Ascendant
     # },
 }
 

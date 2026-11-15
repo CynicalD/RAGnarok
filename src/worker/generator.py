@@ -13,7 +13,8 @@ CHAT_MODEL = "gpt-5.4-mini"
 CHAT_OPTIONS = {"reasoning_effort": "none", "temperature": 0.2}
 MAX_ANSWER_TOKENS = 600
 MAX_SOURCES = 3
-DISCORD_MAX_CHARS = 2000
+# Discord allows 2000 characters. This leaves room for the question the worker quotes above the answer.
+MAX_REPLY_CHARS = 1600
 
 # The model replies with this exact word when the context has no answer. A fixed marker
 # lets code swap in a friendly message, skip the source links, and log the miss.
@@ -89,7 +90,7 @@ def answer(question):
 
     text, used = split_sources(reply, chunks)
     links = source_links(used)
-    result["text"] = f"{text[:DISCORD_MAX_CHARS - len(links) - 2]}\n\n{links}"
+    result["text"] = f"{text[:MAX_REPLY_CHARS - len(links) - 2]}\n\n{links}"
     result["answered"] = True
     result["sources"] = list(dict.fromkeys(chunk["title"] for chunk in used))[:MAX_SOURCES]
     return result

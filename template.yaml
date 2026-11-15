@@ -28,7 +28,8 @@ Resources:
       CodeUri: src/app/
       Handler: main.handler
       Timeout: 10
-      # Memory still debatable: more memory also means more CPU, which shortens the cold start.
+      # Memory is here for the CPU that comes with it, not the RAM (it uses about 115 MB).
+      # Measured cold start at 1024 MB: 0.6 s init + 0.4 s run, against Discord's 3 s limit.
       MemorySize: 1024
       Environment:
         Variables:

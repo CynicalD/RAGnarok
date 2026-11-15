@@ -59,7 +59,8 @@ def lambda_handler(event, context):
             log["outcome"] = "over_quota"
         else:
             result = answer(question)
-            reply = result.pop("text")
+            # Discord shows only "used /ask", so quote the question for everyone else reading.
+            reply = f"> {question}\n{result.pop('text')}"
             log.update(result)
             if not result["answered"]:
                 log["outcome"] = "no_answer"
