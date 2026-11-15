@@ -1,12 +1,15 @@
 """Offline data pipeline for the ARK wiki. Runs locally, never deployed to Lambda.
 
-Phase A (rn): scrape -> clean-> chunk -> save to data/chunks.jsonl.
-Phase B (added once OpenAI/Pinecone keys exist): embed + upsert into Pinecone.
+scrape -> clean -> chunk -> embed (dense) + BM25 (sparse) -> upsert into Pinecone.
+
+    python scripts/ingest.py                  # full run: rebuilds the whole index
+    python scripts/ingest.py "Rex Saddle"     # preview one page's extracted text, upserts nothing
 """
 
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -34,12 +37,20 @@ EMBED_MODEL = "text-embedding-3-small"
 EMBED_DIM = 1536
 PINECONE_CLOUD = "aws"
 PINECONE_REGION = "us-east-1"
-BM25_PATH = Path("data/bm25_encoder.json")
+# Written straight into the worker package: the worker must load the same fit the index was built with.
+BM25_PATH = Path("src/worker/bm25_encoder.json")
 BATCH_SIZE = 100
 
-CREATURE_CATEGORY = "Creatures"
+# Wiki categories to ingest. Order is priority: a page in two categories keeps the first.
+CATEGORIES = ["Creatures", "Weapons", "Armor"]
 
-# General "how does X work" pages. Creature pages cover per-creature specifics,
+# Primitive Plus was an ASE-only mod. Its pages reuse real item names with mod stats.
+EXCLUDED_TITLE_MARKERS = ["(Primitive Plus)"]
+
+# Abort before touching Pinecone if more than this share of pages failed to scrape.
+MAX_FAILED_SHARE = 0.02
+
+# General "how does X work" pages. Category pages cover one creature or item each,
 # these cover the mechanics those pages assume you already know.
 MECHANICS_PAGES = [
     "Taming", "Breeding", "Incubation", "Imprinting", "Mutations", "Kibble",
@@ -77,29 +88,52 @@ def api_query(**params):
         params.update(data["continue"])
 
 
-def fetch_creature_titles():
-    """Every real creature page on the wiki.
+def fetch_category_titles(category):
+    """Every real page in one wiki category.
 
-    Category:Creatures holds ~760 pages, but over half are redirects: variants like
-    "Aberrant Rex" or "Corrupted Rex" point at the base creature page rather than
-    holding their own content. Dropping redirects collapses them automatically and
-    leaves ~350 pages with actual prose. Subpages (e.g. "Ankylosaurus/tr") are
-    translations, so they go too.
+    Over half of Category:Creatures is redirects: variants like "Aberrant Rex" or
+    "Corrupted Rex" point at the base creature page rather than holding their own
+    content, so dropping redirects collapses them. Subpages (e.g. "Ankylosaurus/tr")
+    are translations, so they go too. Gear categories have almost no redirects, but
+    the same filters still apply.
     """
     titles = []
     for page in api_query(
         action="query",
         generator="categorymembers",
-        gcmtitle=f"Category:{CREATURE_CATEGORY}",
+        gcmtitle=f"Category:{category}",
         gcmnamespace=0,
         gcmlimit=500,
         prop="info",
     ):
         for entry in page["query"]["pages"]:
-            if "redirect" in entry or "/" in entry["title"]:
+            title = entry["title"]
+            if "redirect" in entry or "/" in title:
                 continue
-            titles.append(entry["title"])
+            if any(marker in title for marker in EXCLUDED_TITLE_MARKERS):
+                continue
+            titles.append(title)
     return sorted(titles)
+
+
+def collect_titles():
+    """Map each page title to its category label, so every page is scraped once."""
+    labels = {}
+    for category in CATEGORIES:
+        titles = fetch_category_titles(category)
+        new = [title for title in titles if title not in labels]
+        for title in new:
+            labels[title] = category.lower()
+        print(f"  {category}: {len(titles)} pages ({len(new)} new)")
+    for title in MECHANICS_PAGES:
+        labels.setdefault(title, "mechanics")
+
+    # Two titles with the same slug would silently overwrite each other's chunks.
+    slugs = {}
+    for title in labels:
+        if slugs.setdefault(slug(title), title) != title:
+            sys.exit(f"Slug collision: {title!r} and {slugs[slug(title)]!r}")
+    return labels
 
 
 def fetch_page_html(title):
@@ -113,27 +147,80 @@ def fetch_page_html(title):
 
 
 def infobox_facts(content, title):
-    """Pull the creature infobox out as plain "Label: Value" lines.
+    """Pull the infobox out as plain "Label Value" facts.
 
-    The infobox holds the facts players actually ask for — saddle and its level, taming
-    method, preferred kibble, drag weight, incubation and maturation times. It renders as
-    nested widget divs, so we read only the leaf rows (`info-unit-row`) and dedupe: the
-    parent wrappers repeat their children's text, which would otherwise triple the content.
+    The infobox holds the facts players actually ask for: a creature's saddle, taming
+    method and incubation time, or an item's damage, armor rating, unlock level and
+    crafting station. It renders as nested widget divs, so we read only the leaf rows
+    (`info-unit-row`) and dedupe: the parent wrappers repeat their children's text,
+    which would otherwise triple the content.
     """
     facts = []
     for row in content.select("div.info-unit-row"):
         text = re.sub(r"\s+", " ", row.get_text(" ", strip=True))
         if text and text != title and text not in facts:
             facts.append(text)
+
+    # Crafting cost has no leaf rows: it is a list of bold "380 × Hide" entries.
+    for unit in content.select("div.info-unit"):
+        caption = unit.select_one("div.info-unit-caption")
+        if caption and caption.get_text(strip=True) == "Ingredients":
+            items = [re.sub(r"\s+", " ", b.get_text(" ", strip=True)) for b in unit.select("b")]
+            if items:
+                facts.append("Ingredients " + " + ".join(items))
+            break
     return facts
+
+
+def cell_text(cell):
+    """A table cell's text, falling back to its image's alt text (icon-only headers)."""
+    text = re.sub(r"\s+", " ", cell.get_text(" ", strip=True))
+    if not text and cell.find("img"):
+        text = cell.find("img").get("alt", "").removesuffix(".png")
+    return text
+
+
+def table_lines(table):
+    """Flatten one data table into text lines, one per row.
+
+    When every row lines up with the header we write "Header: value" pairs, so a row
+    still makes sense if chunking separates it from the header. Tables with merged
+    cells don't line up, so those fall back to plain " | " rows under the header.
+    Changelog tables are skipped: long, and nobody asks the bot for patch history.
+    """
+    rows = []
+    for tr in table.find_all("tr"):
+        cells = [cell_text(cell) for cell in tr.find_all(["th", "td"])]
+        if any(cells):
+            rows.append(cells)
+    if not rows or rows[0][0].startswith("Patch"):
+        return []
+
+    header, body = rows[0], rows[1:]
+    if body and all(len(row) == len(header) for row in body):
+        return ["; ".join(f"{name}: {value}" for name, value in zip(header, row) if value) for row in body]
+    return [" | ".join(row) for row in rows]
+
+
+def flatten_tables(soup, content):
+    """Swap each data table for a <p> of its rows, so it survives the noise pass in place."""
+    for table in content.select("table.wikitable"):
+        if table.find_parent("table"):
+            continue
+        lines = table_lines(table)
+        if lines:
+            paragraph = soup.new_tag("p")
+            paragraph.string = "\n".join(lines)
+            table.replace_with(paragraph)
 
 
 def html_to_text(html, title):
     soup = BeautifulSoup(html, "html.parser")
     content = soup.select_one("div.mw-parser-output") or soup
 
-    # Read the infobox before the noise pass below strips the widgets it lives in.
+    # Read the infobox and tables before the noise pass below strips them.
     facts = infobox_facts(content, title)
+    flatten_tables(soup, content)
 
     for selector in NOISE_SELECTORS:
         for tag in content.select(selector):
@@ -143,11 +230,11 @@ def html_to_text(html, title):
     for element in content.find_all(["h2", "h3", "p", "li"]):
         text = element.get_text(" ", strip=True)
         if text:
-            parts.append(re.sub(r"\s+", " ", text))
+            parts.append(re.sub(r"[^\S\n]+", " ", text))  # collapse spaces, keep table row breaks
     return "\n".join(parts)
 
 
-def chunk_text(text, title, encoder):
+def chunk_text(text, title, category, encoder):
     tokens = encoder.encode(text)
     step = CHUNK_TOKENS - CHUNK_OVERLAP
     chunks = []
@@ -156,6 +243,7 @@ def chunk_text(text, title, encoder):
         chunks.append({
             "id": f"{slug(title)}-{index}",
             "title": title,
+            "category": category,
             "url": page_url(title),
             "text": encoder.decode(window).strip(),
         })
@@ -164,22 +252,28 @@ def chunk_text(text, title, encoder):
     return chunks
 
 
-def scrape_pages(titles):
-    rows = []
-    for position, title in enumerate(titles, start=1):
+def fetch_with_retry(title, attempts=3):
+    for attempt in range(attempts):
         try:
-            html = fetch_page_html(title)
+            return fetch_page_html(title)
         except requests.RequestException as error:
-            print(f"  ! {title}: request failed ({error})")
-            continue
+            print(f"  ! {title}: request failed ({error}), attempt {attempt + 1}/{attempts}")
+            time.sleep(2 * (attempt + 1))
+    return None
+
+
+def scrape_pages(labels):
+    rows, failed = [], []
+    for position, (title, category) in enumerate(labels.items(), start=1):
+        html = fetch_with_retry(title)
         if not html:
-            print(f"  ! {title}: page not found, skipping")
+            failed.append(title)
             continue
         text = html_to_text(html, title)
-        rows.append({"title": title, "url": page_url(title), "text": text, "words": len(text.split())})
-        print(f"  [{position}/{len(titles)}] {title}: {len(text.split())} words")
+        rows.append({"title": title, "category": category, "text": text, "words": len(text.split())})
+        print(f"  [{position}/{len(labels)}] {title}: {len(text.split())} words")
         time.sleep(0.3)  # be polite to the wiki
-    return rows
+    return rows, failed
 
 
 def embed_texts(client, texts):
@@ -213,7 +307,12 @@ def upsert_chunks(index, chunks, dense_vectors, sparse_vectors):
         vector = {
             "id": chunk["id"],
             "values": dense,
-            "metadata": {"text": chunk["text"], "title": chunk["title"], "url": chunk["url"]},
+            "metadata": {
+                "text": chunk["text"],
+                "title": chunk["title"],
+                "category": chunk["category"],
+                "url": chunk["url"],
+            },
         }
         if sparse["indices"]:  # skip empty sparse vectors (chunks with only stopwords)
             vector["sparse_values"] = {"indices": sparse["indices"], "values": sparse["values"]}
@@ -224,20 +323,27 @@ def upsert_chunks(index, chunks, dense_vectors, sparse_vectors):
 
 
 def main():
-    creatures = fetch_creature_titles()
-    titles = creatures + MECHANICS_PAGES
-    print(f"Found {len(creatures)} creature pages + {len(MECHANICS_PAGES)} mechanics pages.\n")
-    rows = scrape_pages(titles)
+    print("Listing pages...")
+    labels = collect_titles()
+    print(f"Found {len(labels)} pages in total.\n")
+    rows, failed = scrape_pages(labels)
+
+    if failed:
+        print(f"\n{len(failed)} pages failed to scrape: {failed}")
+    if len(failed) > len(labels) * MAX_FAILED_SHARE:
+        sys.exit("Too many failures. The live index was not touched; fix the scrape and re-run.")
 
     df = pd.DataFrame(rows)
     df = df.drop_duplicates(subset="text")
+    stubs = df[df["words"] < MIN_PAGE_WORDS]["title"].tolist()
     df = df[df["words"] >= MIN_PAGE_WORDS].reset_index(drop=True)
-    print(f"\nKept {len(df)} pages after dropping stubs/duplicates.")
+    print(f"\nKept {len(df)} pages. Dropped {len(stubs)} stubs: {stubs}")
+    print(df.groupby("category")["title"].count().to_string())
 
     encoder = tiktoken.encoding_for_model(EMBED_MODEL)
     all_chunks = []
     for row in df.itertuples():
-        all_chunks.extend(chunk_text(row.text, row.title, encoder))
+        all_chunks.extend(chunk_text(row.text, row.title, row.category, encoder))
 
     OUTPUT_PATH.parent.mkdir(exist_ok=True)
     with OUTPUT_PATH.open("w") as file:
@@ -261,10 +367,10 @@ def main():
     pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
     index = ensure_index(pc)
 
-    # BM25 was just re-fit, so every sparse vector already in the index maps terms to
-    # different IDs than the new encoder does. Mixing the two would score nonsense.
+    # Upsert only overwrites IDs it sends. Chunks from pages that shrank or were dropped
+    # would linger with old text and old BM25 weights, so start from an empty index.
     if index.describe_index_stats().get("total_vector_count", 0):
-        print("  wiping stale vectors (BM25 term IDs changed)...")
+        print("  wiping the old vectors...")
         index.delete(delete_all=True)
 
     upsert_chunks(index, all_chunks, dense_vectors, sparse_vectors)
@@ -272,4 +378,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1:
+        for page_title in sys.argv[1:]:
+            print(html_to_text(fetch_page_html(page_title), page_title), "\n")
+    else:
+        main()

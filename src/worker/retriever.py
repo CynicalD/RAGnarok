@@ -1,7 +1,7 @@
 """Hybrid retrieval: turn a question into the top-k most relevant wiki chunks.
 
 Embeds the query (dense) + BM25-encodes it (sparse), blends them with `alpha`,
-then searches the Pinecone index. Imported by the Lambda in a later milestone.
+then searches the Pinecone index.
 """
 
 import os
@@ -27,11 +27,10 @@ INDEX_NAME = "ragnarok"
 EMBED_MODEL = "text-embedding-3-small"
 BM25_PATH = Path(__file__).parent / "bm25_encoder.json"
 DEFAULT_TOP_K = 8
-# Measured, not guessed — see scripts/eval_retrieval.py. Accuracy is flat at 100% for
-# alpha 0.6-0.95 and drops to 85% at 0.4, because misspelled dino names score ~zero on
-# BM25 and need the dense vector to carry them. 0.7 sits mid-plateau, so it keeps real
-# sparse weight for rare game terms without depending on exact spelling.
-DEFAULT_ALPHA = 0.7
+# Measured, not guessed: scripts/eval_retrieval.py scores 38 questions at each alpha.
+# On the 3,876-chunk corpus only 0.8-0.9 gets every question right, so 0.85 sits in the
+# middle. Lower values lose misspelled names, which score zero on the BM25 side.
+DEFAULT_ALPHA = 0.85
 
 openai_client = OpenAI()
 pinecone_index = Pinecone(api_key=os.environ["PINECONE_API_KEY"]).Index(INDEX_NAME)
@@ -63,21 +62,13 @@ def retrieve(query, top_k=DEFAULT_TOP_K, alpha=DEFAULT_ALPHA):
 
 SAMPLE_QUESTIONS = [
     "What saddle do I need to ride a Rex?",
-    "How do I tame an Ankylosaurus?",
     "Which creature is best for gathering metal?",
-    "What does the Argentavis eat?",
-    "How do I knock out a Carnotaurus?",
-    "Which dinos are good for carrying heavy loads?",
-    "What is the Giganotosaurus known for?",
-    "How much torpor does a Rex have?",
-    "Which creature can gather a lot of berries?",
-    "What is a good early game mount?",
-    "Tell me about the Quetzal platform saddle.",
-    "Which creatures live in the water?",
-    "How can I get the GigaDesmodus?",
     "How can I tame a dreadnoughtus",
-    "What is the strongest dinosaur for the broodmother island boss?",
-    "How can I breed a Rex?"
+    "How can I breed a Rex?",
+    "What does a Rex Saddle cost to craft?",
+    "Which armor is best against the cold?",
+    "How much damage does a Longneck Rifle do?",
+    "What can destroy a metal wall?",
 ]
 
 
