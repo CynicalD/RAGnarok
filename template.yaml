@@ -16,7 +16,7 @@ Parameters:
 Globals:
   Function:
     Runtime: python3.13
-    # arm64 (AWS Graviton) — ~20% cheaper per GB-second, and it matches an Apple Silicon
+    # arm64 (AWS Graviton) is roughly 20% cheaper per GB-second, and it matches an Apple Silicon
     # Mac, so `sam build --use-container` runs natively instead of under emulation.
     Architectures:
       - arm64
@@ -28,12 +28,11 @@ Resources:
       CodeUri: src/app/
       Handler: main.handler
       Timeout: 10
-      # More memory = more CPU during cold start, so imports finish well within
-      # Discord's 3s window for the deferred ack. Handler runs ~1s, billed per-ms.
+      # Memory still debatable: more memory also means more CPU, which shortens the cold start.
       MemorySize: 1024
       Environment:
         Variables:
-          # Safe to hardcode: the Discord PUBLIC key is not a secret.
+          # Safe to commit: the public key only verifies signatures, it can't create them.
           DISCORD_PUBLIC_KEY: f428776da235244a009798aa72c1621536d64a2a58d94b3d9058e2ef17f908e3
           WORKER_FUNCTION_NAME: !Ref WorkerFunction
       Policies:
@@ -57,6 +56,31 @@ Resources:
         Variables:
           OPENAI_API_KEY: !Ref OpenAIApiKey
           PINECONE_API_KEY: !Ref PineconeApiKey
+          USAGE_TABLE: !Ref UsageTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsageTable
+      # Async invokes retry failed runs twice by default, which would bill OpenAI again
+      # for the same question. Discord's reply token dies after 15 minutes, so a
+      # question still waiting past 10 is dropped instead of answered into the void.
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+        MaximumEventAgeInSeconds: 600
+
+  # One item per user per day: how many questions they have asked (see src/worker/quota.py).
+  UsageTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
 
 Outputs:
   InteractionsUrl:
