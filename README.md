@@ -1,67 +1,143 @@
 # RAGnarok
 
-A Discord bot that answers Ark: Survival Ascended questions. You type `/ask`, it searches the ARK wiki and writes an answer from what it found.
+A Discord bot that answers Ark: Survival Ascended questions. You type `/ask`, it searches the ARK wiki and writes an answer from what it found, with links to the pages it used.
 
 **[Join the Discord and try it](https://discord.gg/SZ9HXsxMn)**
 
+![RAGnarok answering questions in Discord](docs/demo.png)
+
+| | |
+|---|---|
+| Knowledge base | 791 wiki pages: every creature, weapon, armor piece and saddle, plus core mechanics |
+| Answer time | 1 to 2 seconds once warm |
+| Retrieval accuracy | 38 of 38 test questions, 9 of them deliberately misspelled |
+| Cost | about $0.0027 per question |
+| Running cost when idle | $0 |
+
 ## Why
 
-I built this for myself. I wanted to know how to tame certain dinos and what to feed them. Asking ChatGPT on the free plan wasn't ideal, kept hitting the limit and waiting a few hours. Googling meant digging links. So I made a bot that only reads the wiki. It costs about a third of a cent per question, which is next to nothing per month.
-
-## Demo
-
-![Asking the bot a question](docs/AskingQ.png)
-![How to tame a Rex](docs/HowToTameRexQ.png)
-![How to tame a Bronto](docs/HowToTameBrontoQ.png)
-![How to tame an Allosaurus](docs/HowToTameAllosaurusQ.png)
+I built this for myself. I wanted to know how to tame certain dinos and what to feed them. ChatGPT on the free plan kept hitting the limit, and when it did answer I had no way to tell which numbers to trust. Googling meant digging through links, half of them written for the older game. So I made a bot that only reads the wiki, shows where each answer came from, and says so when the wiki doesn't have it.
 
 ## How it works
 
-It's a RAG pipeline running on two AWS Lambdas.
+It's a RAG pipeline on two AWS Lambdas.
+
+```mermaid
+flowchart LR
+    subgraph offline["Offline, on my laptop"]
+        W[ARK wiki API] --> I[scripts/ingest.py<br/>scrape, clean, chunk]
+        I --> V[dense + sparse vectors]
+    end
+    V --> P[(Pinecone)]
+
+    subgraph online["Every /ask, on AWS"]
+        D[Discord] -->|signed POST| H[Handler Lambda<br/>verify, defer]
+        H -->|async invoke| K[Worker Lambda]
+        K -->|PATCH answer| D
+    end
+    K <-->|hybrid search| P
+    K <-->|embed + answer| O[OpenAI]
+    K <-->|daily count| Q[(DynamoDB)]
+```
 
 1. You run `/ask` in Discord.
-2. Discord sends a signed request to the handler Lambda. The handler checks the signature, replies "thinking..." right away, and passes the question to the worker Lambda. Discord wants a reply within 3 seconds and a real answer takes about 3, so the slow part has to run somewhere else.
-3. The worker embeds the question and runs a hybrid search in Pinecone. Dense vectors match meaning. BM25 matches exact Ark terms like "engram".
-4. The top 8 chunks go to gpt-5.4-mini with instructions to answer only from that context.
-5. The worker edits the "thinking..." message with the answer.
+2. Discord sends a signed request to the handler Lambda. The handler checks the Ed25519 signature, starts the worker, and replies "thinking..." right away. Discord wants a reply within 3 seconds and a cold worker takes about 7, so the slow part has to run somewhere else.
+3. The worker checks your daily limit in DynamoDB.
+4. It embeds the question and runs a hybrid search in Pinecone. Dense vectors match meaning. BM25 matches exact Ark terms like "engram".
+5. The top 8 chunks go to gpt-5.4-mini as numbered passages. It has to answer from those passages only, name the ones it used, and return a fixed marker when none of them answer the question.
+6. The worker edits the "thinking..." message into the answer and adds links to the source pages.
+
+## Things I measured instead of guessing
+
+### How much to trust keywords
+
+Hybrid search has a knob, alpha, that sets how much weight goes to meaning versus exact keywords. I guessed keyword-heavy would win, since Ark is full of strange names. Then I measured it.
+
+`scripts/eval_retrieval.py` runs 38 questions and checks two things for each: did the right page come back, and is the answer itself in the retrieved text.
+
+| alpha | Right page | Misspelled questions | Answer in text |
+|---|---|---|---|
+| 0.0, keywords only | 84% | 56% | 79% |
+| 0.4 | 95% | 89% | 97% |
+| 0.6 to 0.75 | 97% | 100% | 100% |
+| **0.8 to 0.9** | **100%** | **100%** | **100%** |
+| 1.0, meaning only | 97% | 100% | 100% |
+
+My guess was wrong, for two reasons. BM25 can't match "gigantoraptr" at all, so typos need the dense vector. And keywords lose value as the corpus grows: once "saddle" appears in hundreds of chunks it stops narrowing anything down. The best range was 0.6 to 0.95 at 2,371 chunks and shrank to 0.8 to 0.9 at 3,876. The bot uses 0.85.
+
+### Which model
+
+gpt-5-mini costs a third as much per token as gpt-5.4-mini. `scripts/eval_answers.py` runs 19 questions through the full pipeline and checks each answer for the right fact.
+
+| Model | Correct | Cost per question | Average wait |
+|---|---|---|---|
+| **gpt-5.4-mini, no reasoning** | **19/19** | **$0.0027** | **1.0 s** |
+| gpt-5-mini, minimal reasoning | 17/19 | $0.0010 | 1.5 s |
+| gpt-5-mini, low reasoning | 19/19 | $0.0013 | 3.3 s |
+
+The cheaper model only matches the accuracy with reasoning turned on, and then it bills reasoning tokens and takes three times as long. I kept gpt-5.4-mini.
+
+### What the scraper was throwing away
+
+A retrieval score can be perfect while the bot still can't answer, if the fact never made it into the database. That happened twice.
+
+The first version only kept prose. The wiki keeps its numbers in infoboxes and tables, so the right page came back every time and the answer wasn't on it. Previewing one page's extracted text showed the gap. The ingest now turns the infobox into a "key facts" line and rewrites each data table as text rows.
+
+| Question | Before | After |
+|---|---|---|
+| What saddle does an Ankylosaurus need? | I don't know | Ankylo Saddle, level 36 |
+| What does a Rex Saddle cost to craft? | I don't know | 380 Hide, 200 Fiber, 50 Metal Ingot |
+| Which armor gives the most cold protection? | I don't know | Fur Armor, 249 |
+| How much damage does an Assault Rifle do? | I don't know | 47 |
+
+That's why the eval checks for the fact now, and not only the page.
 
 ## Knowledge base
 
-`scripts/ingest.py` runs locally and never gets deployed. It pulls every creature page on the wiki plus 17 mechanics pages like Taming, Breeding and Imprinting. It cleans them to plain text, pulls out the infobox facts like saddle level, kibble and incubation time, then chunks, embeds and uploads everything to Pinecone.
+`scripts/ingest.py` runs locally and never gets deployed. It lists every page in the wiki's Creatures, Weapons and Armor categories through the MediaWiki API, plus 17 mechanics pages like Taming, Breeding and Imprinting. Over half the Creatures category is redirects, such as "Aberrant Rex" pointing at "Rex", so dropping redirects removes the variant duplicates without a hand-written list.
 
-370 pages, 2,371 chunks (as of now), about $0.02 per full run.
+Each page is cleaned to plain text, cut into 500-token chunks with 50 tokens of overlap, embedded, and uploaded to Pinecone with both vector types.
 
-## Tuning
+791 pages, 3,876 chunks, about $0.035 and 35 minutes per full run. The run stops before touching the live index if more than 2% of pages fail to scrape.
 
-Hybrid search has a knob that sets how much weight goes to meaning vs keywords. I guessed keyword-heavy would win, since Ark has a lot of weird names. Then I measured it.
+## Daily limits by Discord role
 
-`scripts/eval_retrieval.py` runs 20 test questions, 5 with misspelled dino names, and checks if the right page comes back. Pure keyword search got 70%. A 0.7 blend toward meaning got 100%. Keywords lost for two reasons. BM25 can't match "gigantoraptr" at all. And once the corpus grew 7x, words like "egg" showed up in thousands of chunks and stopped meaning anything.
+Each user gets a number of questions per day, counted in DynamoDB with an atomic `ADD`. Discord includes a member's role IDs in every slash-command request, so a server can give its ranks different limits without any accounts or logins. The table that maps roles to limits is in `src/worker/quota.py`.
+
+![Three answers, then the daily limit message](docs/demo-limit.png)
 
 ## Cost
 
-Measured over real queries, about $0.0033 per question. OpenAI is 99% of that. Lambda and Pinecone stay inside their free tiers.
+About $0.0027 per question, measured. OpenAI is 99% of that, and the input context is 94%. Lambda, API Gateway, DynamoDB and Pinecone stay inside their free tiers at this volume, and nothing is billed while nobody is asking.
 
 ## Tech stack
 
 - Python 3.13, FastAPI + Mangum
-- AWS SAM: Lambda on arm64, API Gateway, IAM
+- AWS SAM: two Lambdas on arm64, API Gateway, DynamoDB, IAM
 - OpenAI text-embedding-3-small for embeddings, gpt-5.4-mini for answers
 - Pinecone for hybrid dense + sparse search
 - BM25 via pinecone-text
 - requests, BeautifulSoup and pandas for ingestion
 - PyNaCl for Discord's Ed25519 signature check
+- pytest for the handler and quota logic
 
 ## Project structure
 
 ```text
 .
 ├── src/app          handler Lambda: verifies, defers, invokes worker
-├── src/worker       worker Lambda: retrieval, generation, Discord reply
+├── src/worker       worker Lambda
+│   ├── worker.py        quota check, reply, usage log
+│   ├── retriever.py     hybrid search
+│   ├── generator.py     prompt, answer, source links
+│   └── quota.py         daily limits by Discord role
 ├── scripts
 │   ├── ingest.py             builds the knowledge base
 │   ├── eval_retrieval.py     scores retrieval across blend values
-│   └── register_commands.py  registers /ask with Discord
-├── tests            handler tests, run offline
+│   ├── eval_answers.py       scores final answers, cost and speed per model
+│   ├── register_commands.py  registers /ask with Discord
+│   └── deploy.sh             build and deploy
+├── tests            handler and quota tests, run offline
 └── template.yaml    AWS SAM infrastructure
 ```
 
@@ -76,19 +152,25 @@ pip install -r requirements-dev.txt
 cp .env.example .env   # fill in your keys
 ```
 
-Build the knowledge base, then copy the fitted BM25 encoder into the worker. The worker loads its own copy, and a stale one silently breaks keyword search.
+Build the knowledge base. This also writes the fitted BM25 encoder into `src/worker/`, where the worker loads it.
 
 ```bash
 python scripts/ingest.py
-cp data/bm25_encoder.json src/worker/
 ```
 
-Deploy, register the command, then paste the endpoint URL into the Discord developer portal.
+Deploy, register the command, then paste the endpoint URL from the deploy output into the Discord developer portal as the Interactions Endpoint URL.
 
 ```bash
-sam build --use-container
-sam deploy --guided
+scripts/deploy.sh
 python scripts/register_commands.py
+```
+
+Check your work:
+
+```bash
+pytest                              # handler and quota tests, no network
+python scripts/eval_retrieval.py    # retrieval accuracy at each alpha
+python scripts/eval_answers.py      # answer accuracy, cost and speed
 ```
 
 If your OpenAI project limits which models it can use, allow both text-embedding-3-small and gpt-5.4-mini. I only allowed the chat model once and every question failed with a 403.
@@ -97,15 +179,18 @@ If your OpenAI project limits which models it can use, allow both text-embedding
 
 - No memory. Every `/ask` is standalone, so follow-up questions don't work yet.
 - Answers are only as fresh as the last ingest. After a game patch, re-run it.
-- No rate limiting yet, so one person could spam it (don't). 
+- It covers creatures, weapons, armor and core mechanics. Structures, resources, consumables and maps aren't in yet.
+- It only knows the vanilla game. Modded servers change stats and add items the wiki doesn't cover.
 
 ## Roadmap
 
-- Wiki source links in every answer
-- Per-user rate limits
-- Follow-up questions
-- Cache FAQ's
+- Structures, resources, consumables and tools
+- Maps, caves and boss requirements
+- A private knowledge base per server for its own rules, rates and mods
+- A queue between the two Lambdas to smooth out bursts
 
-## License
+## Credits and license
 
-See [LICENSE](LICENSE).
+Game data comes from the [ARK Official Community Wiki](https://ark.wiki.gg), whose content is licensed [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0). Every answer links back to the pages it used. This project isn't affiliated with Studio Wildcard.
+
+The code is MIT licensed. See [LICENSE](LICENSE).
