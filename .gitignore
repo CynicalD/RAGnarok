@@ -9,7 +9,6 @@ __pycache__/
 
 # AWS SAM
 .aws-sam/
-samconfig.toml
 
 # Generated data (rebuilt by scripts/ingest.py)
 data/
