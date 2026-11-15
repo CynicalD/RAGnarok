@@ -1,4 +1,4 @@
-"""Generate a grounded answer, with wiki source links, from retrieved chunks."""
+"""Generate a grounded answer, with its sources, from retrieved wiki chunks and server notes."""
 
 import re
 import sys
@@ -35,12 +35,40 @@ SYSTEM_PROMPT = (
     f"Only if the passages hold nothing that answers the question, reply with just {NO_ANSWER}."
 )
 
+# Added to the system prompt only when the context holds server notes, so a server
+# without notes sends the model exactly the prompt it always has. The wording was picked
+# by counting: without the "forbids" sentence the model answered NO_ANSWER to rule
+# questions whose answer is "no", and when left to divide a wiki time by a server rate
+# it sometimes multiplied.
+SERVER_LABEL = "Server notes"
+SERVER_RULE = (
+    f" Passages marked '{SERVER_LABEL}' were written by this Discord server's admins about "
+    "its own rules, rates and perks. Answer from them like any other passage. Servers change "
+    "the game's default settings, so when a server note and a wiki passage disagree, for "
+    "example on taming or breeding rates, go with the server note. A rule that forbids "
+    "something does answer the question: say it is not allowed and give the rule. When a "
+    "server rate applies to a wiki number, such as hatch, mature or taming speed to a wiki "
+    "time, give both the wiki number and the server's rate, and leave the maths to the player."
+)
+
 openai_client = OpenAI(max_retries=4)  # retries 429s and timeouts with backoff
+
+
+def is_server(chunk):
+    return chunk["source"] == "server"
+
+
+def passage_name(chunk):
+    return f"{SERVER_LABEL} ({chunk['title']})" if is_server(chunk) else chunk["title"]
+
+
+def system_prompt(chunks):
+    return SYSTEM_PROMPT + (SERVER_RULE if any(is_server(chunk) for chunk in chunks) else "")
 
 
 def build_prompt(query, chunks):
     context = "\n\n".join(
-        f"[{number}] {chunk['title']}: {chunk['text']}" for number, chunk in enumerate(chunks, start=1)
+        f"[{number}] {passage_name(chunk)}: {chunk['text']}" for number, chunk in enumerate(chunks, start=1)
     )
     return f"Context:\n{context}\n\nQuestion: {query}"
 
@@ -56,18 +84,21 @@ def split_sources(reply, chunks):
 
 
 def source_links(chunks):
-    """Markdown links to the pages behind an answer. <url> stops Discord embedding previews."""
+    """Markdown links to the pages behind an answer. <url> stops Discord embedding previews.
+
+    A server note has no public page, so it shows as a plain label.
+    """
     links = []
     for chunk in chunks:
-        link = f"[{chunk['title']}](<{chunk['url']}>)"
+        link = passage_name(chunk) if is_server(chunk) else f"[{chunk['title']}](<{chunk['url']}>)"
         if link not in links:
             links.append(link)
     return "Sources: " + " · ".join(links[:MAX_SOURCES])
 
 
-def answer(question):
+def answer(question, guild_id=None):
     """Run the full RAG pipeline. Returns the reply text plus what the worker logs."""
-    chunks = retrieve(question)
+    chunks = retrieve(question, guild_id)
     result = {"text": NO_ANSWER_MESSAGE, "answered": False, "sources": [], "input_tokens": 0, "output_tokens": 0}
     if not chunks:
         return result
@@ -76,7 +107,7 @@ def answer(question):
         model=CHAT_MODEL,
         max_completion_tokens=MAX_ANSWER_TOKENS,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt(chunks)},
             {"role": "user", "content": build_prompt(question, chunks)},
         ],
         **CHAT_OPTIONS,
@@ -92,7 +123,7 @@ def answer(question):
     links = source_links(used)
     result["text"] = f"{text[:MAX_REPLY_CHARS - len(links) - 2]}\n\n{links}"
     result["answered"] = True
-    result["sources"] = list(dict.fromkeys(chunk["title"] for chunk in used))[:MAX_SOURCES]
+    result["sources"] = list(dict.fromkeys(passage_name(chunk) for chunk in used))[:MAX_SOURCES]
     return result
 
 

@@ -58,7 +58,7 @@ def lambda_handler(event, context):
             reply = f"You've used all {limit} of your questions for today. They reset at midnight UTC."
             log["outcome"] = "over_quota"
         else:
-            result = answer(question)
+            result = answer(question, guild_id)
             # Discord shows only "used /ask", so quote the question for everyone else reading.
             reply = f"> {question}\n{result.pop('text')}"
             log.update(result)
