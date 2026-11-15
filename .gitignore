@@ -21,3 +21,5 @@ cost_audit.md
 biz.md
 docs/context_screenshots
 
+# Each Discord server's private notes (see scripts/ingest_server.py)
+servers/

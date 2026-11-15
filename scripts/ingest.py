@@ -368,9 +368,10 @@ def main():
     index = ensure_index(pc)
 
     # Upsert only overwrites IDs it sends. Chunks from pages that shrank or were dropped
-    # would linger with old text and old BM25 weights, so start from an empty index.
-    if index.describe_index_stats().get("total_vector_count", 0):
-        print("  wiping the old vectors...")
+    # would linger with old text and old BM25 weights, so start from an empty namespace.
+    # The wiki is the default namespace. Each server's notes sit in their own and stay put.
+    if "__default__" in index.describe_index_stats()["namespaces"]:
+        print("  wiping the old wiki vectors...")
         index.delete(delete_all=True)
 
     upsert_chunks(index, all_chunks, dense_vectors, sparse_vectors)
