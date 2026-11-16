@@ -23,6 +23,9 @@ NO_ANSWER_MESSAGE = (
     "I couldn't find that in the ARK wiki. Try rephrasing, "
     "or name the creature or item you mean."
 )
+# The last two sentences were picked by counting. The old ending, "Only if the passages
+# hold nothing that answers the question, reply with just NO_ANSWER", made the model
+# refuse every yes/no question whose answer was no, such as "Can you cryopod a Titanosaur?".
 SYSTEM_PROMPT = (
     "You are RAGnarok, an assistant for the game Ark: Survival Ascended. "
     "Answer the question using only the numbered passages from the ARK wiki that come with it. "
@@ -32,7 +35,8 @@ SYSTEM_PROMPT = (
     "mentioning passage numbers in the answer. "
     "Then add a final line 'Sources: ' with the numbers of the passages you used, "
     "for example 'Sources: 1, 3'. "
-    f"Only if the passages hold nothing that answers the question, reply with just {NO_ANSWER}."
+    "A passage that shows something is not possible does answer the question: say no and give "
+    f"the reason. Reply with just {NO_ANSWER} only when the passages do not cover what was asked."
 )
 
 # Added to the system prompt only when the context holds server notes, so a server

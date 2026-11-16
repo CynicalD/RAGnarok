@@ -43,6 +43,11 @@ CASES = [
     ("How much damage does C4 do to a metal wall?", ["3544"]),
     ("What ammo does the Longneck Rifle use?", ["simple rifle ammo"]),
     ("flack chestpeice armor rating", ["100"]),
+    # The right answer is "no". An earlier prompt refused all of these.
+    ("Can you cryopod a Titanosaur?", ["no", "cryopod"]),
+    ("Can a Giganotosaurus enter boss arenas?", ["no", "too heavy"]),
+    ("Is the Longneck Rifle automatic?", ["no", "single"]),
+    ("How long does it take to tame a Rex?", ["kibble"]),
     ("How do I bake a chocolate cake?", []),
     ("Who won the 2022 World Cup?", []),
     ("What is the best graphics card for ARK?", []),
