@@ -63,7 +63,7 @@ My guess was wrong, for two reasons. BM25 can't match "gigantoraptr" at all, so 
 
 ### Which model
 
-gpt-5-mini costs a third as much per token as gpt-5.4-mini. `scripts/eval_answers.py` runs 19 questions through the full pipeline and checks each answer for the right fact.
+gpt-5-mini costs a third as much per token as gpt-5.4-mini. `scripts/eval_answers.py` runs questions through the full pipeline and checks each answer for the right fact. It had 19 questions when I compared models.
 
 | Model | Correct | Cost per question | Average wait |
 |---|---|---|---|
@@ -100,7 +100,23 @@ The two sets of scores can't be compared. The wiki has 3,876 focused chunks and 
 | 2 | 22 |
 | 3 | 24 |
 
-The prompt needed counting too. With only "server notes win over the wiki" added, the model replied with its no-answer marker to rule questions whose answer was no, like "Can I build at the obelisks?". And when it applied a server's 5x taming rate itself, it once turned 1h 28m into 4h 20m. The final wording says that a rule which forbids something is an answer, and that it should give the wiki number and the server's rate without doing the division. Over 20 questions with 6 tries each, it answered or refused correctly 119 times out of 120.
+The prompt needed counting too. When the model applied a server's 5x taming rate itself, it once turned 1h 28m into 4h 20m. It now gives the wiki number and the server's rate and leaves the division to the player. Rule questions turned up a bigger problem, which gets its own section.
+
+### The bot couldn't say no
+
+Server rules are mostly yes/no questions, and testing them is how I found this. The bot refused every question whose true answer was no. "Can you cryopod a Titanosaur?" got "I couldn't find that in the ARK wiki", with "unable to be Cryopoded" sitting in the retrieved text. I tried seven questions like that, five times each, and it answered 0 of 35.
+
+The cause was the last sentence of the prompt, which told the model to reply with the no-answer marker "only if the passages hold nothing that answers the question". The model read a "no" as nothing. Both evals passed the whole time, because none of their questions had "no" as the right answer.
+
+| Prompt ending | "No" questions answered | Questions it should refuse, refused |
+|---|---|---|
+| Old | 0 of 35 | 40 of 40 |
+| Old, with "when the answer is no, say no" added in front | 35 of 35 | 37 of 40 |
+| **New: something not being possible is an answer, and the marker is only for when the passages don't cover the question** | **35 of 35** | **40 of 40** |
+
+Adding a sentence fixed the refusals and broke something else. Replacing the sentence fixed both. At 10 tries per question the new ending scored 210 of 210, and the eval now has questions whose answer is no.
+
+It also taught me how many tries a count needs. Six tries per question gave one prompt 119 of 120. The next day the same prompt scored 20 of 30 on its rule questions.
 
 ## Knowledge base
 
@@ -129,7 +145,7 @@ When a note and the wiki disagree, the note wins, and the answer says where each
 Sources: Rex · Server notes (Rates)
 ```
 
-`scripts/eval_server.py` checks a server's own questions, then re-runs the wiki questions with the notes in the context. On my test server's made-up notes it scores 14 of 14 and 19 of 19. Real notes stay out of this repo, in a gitignored `servers/` folder.
+`scripts/eval_server.py` checks a server's own questions, then re-runs the wiki questions with the notes in the context. On my test server's made-up notes it scores 14 of 14 and 23 of 23. Real notes stay out of this repo, in a gitignored `servers/` folder.
 
 ## Daily limits by Discord role
 
@@ -214,6 +230,7 @@ If your OpenAI project limits which models it can use, allow both text-embedding
 - Answers are only as fresh as the last ingest. After a game patch, re-run it.
 - It covers creatures, weapons, armor and core mechanics. Structures, resources, consumables and maps aren't in yet.
 - Out of the box it only knows the vanilla game. A server's rates and rules come from its notes. Mod content isn't covered yet.
+- Yes/no facts that the wiki's infobox shows as icons, like whether a creature can be ridden, aren't in the knowledge base yet.
 - Server notes are a first version. Each note file is cut into the same 500-token chunks as a wiki page, which is coarse for a long rules document.
 
 ## Roadmap
